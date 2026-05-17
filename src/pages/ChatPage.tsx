@@ -55,12 +55,6 @@ interface PendingFootprintJumpPayload {
   createTime: number
 }
 
-interface PendingMessageAnalysisJumpPayload {
-  sessionId: string
-  localId: number
-  createTime: number
-}
-
 interface QuotedMessageJumpTarget {
   sourceMessageKey: string
   sourceCreateTime: number
@@ -1619,8 +1613,6 @@ function ChatPage(props: ChatPageProps) {
   const [globalMsgSearchError, setGlobalMsgSearchError] = useState<string | null>(null)
   const pendingInSessionSearchRef = useRef<PendingInSessionSearchPayload | null>(null)
   const pendingFootprintJumpRef = useRef<PendingFootprintJumpPayload | null>(null)
-  const pendingMessageAnalysisJumpRef = useRef<PendingMessageAnalysisJumpPayload | null>(null)
-  const messageAnalysisJumpLoadKeyRef = useRef<string | null>(null)
   const pendingQuotedMessageJumpRef = useRef<QuotedMessageJumpTarget | null>(null)
   const loadMessagesRef = useRef<LoadMessagesFn | null>(null)
   const pendingGlobalMsgSearchReplayRef = useRef<string | null>(null)
@@ -5156,66 +5148,6 @@ function ChatPage(props: ChatPageProps) {
     }, 220)
   }, [currentSessionId, flashNewMessages, getMessageKey, loadMessages])
 
-  const findMessageAnalysisTargetInMessages = useCallback((target: PendingMessageAnalysisJumpPayload): { index: number; message: Message } | null => {
-    if (messages.length === 0) return null
-    const targetLocalId = Math.floor(Number(target.localId || 0))
-    const targetCreateTime = Math.floor(Number(target.createTime || 0))
-    if (targetLocalId <= 0 && targetCreateTime <= 0) return null
-
-    let bestIndex = -1
-    let bestMessage: Message | null = null
-    let bestScore = -1
-    for (let index = 0; index < messages.length; index++) {
-      const item = messages[index]
-      const localId = Math.floor(Number(item.localId || 0))
-      const createTime = Math.floor(Number(item.createTime || 0))
-      const localIdMatch = targetLocalId > 0 && localId === targetLocalId
-      const exactTimeMatch = targetCreateTime > 0 && createTime === targetCreateTime
-      const nearTimeMatch = targetCreateTime > 0 && Math.abs(createTime - targetCreateTime) <= 1
-      if (!localIdMatch && !exactTimeMatch && !nearTimeMatch) continue
-
-      const score = (localIdMatch ? 100 : 0) + (exactTimeMatch ? 40 : (nearTimeMatch ? 20 : 0))
-      if (score > bestScore) {
-        bestIndex = index
-        bestMessage = item
-        bestScore = score
-      }
-    }
-    return bestMessage ? { index: bestIndex, message: bestMessage } : null
-  }, [messages])
-
-  const jumpToMessageAnalysisTarget = useCallback((target: PendingMessageAnalysisJumpPayload, behavior: 'auto' | 'smooth' = 'auto') => {
-    const resolved = findMessageAnalysisTargetInMessages(target)
-    if (resolved) {
-      pendingMessageAnalysisJumpRef.current = null
-      messageAnalysisJumpLoadKeyRef.current = null
-      scrollToResolvedMessage(resolved, behavior)
-      navigate('/chat', { replace: true })
-      return true
-    }
-    return false
-  }, [findMessageAnalysisTargetInMessages, navigate, scrollToResolvedMessage])
-
-  const requestMessageAnalysisWindowLoad = useCallback((target: PendingMessageAnalysisJumpPayload) => {
-    const targetSessionId = String(target.sessionId || '').trim()
-    const targetTime = Math.floor(Number(target.createTime || 0))
-    if (!targetSessionId || targetTime <= 0) return
-    const loadKey = `${targetSessionId}:${Math.floor(Number(target.localId || 0))}:${targetTime}`
-    if (messageAnalysisJumpLoadKeyRef.current === loadKey) return
-    messageAnalysisJumpLoadKeyRef.current = loadKey
-
-    const requestSeq = inSessionResultJumpRequestSeqRef.current + 1
-    inSessionResultJumpRequestSeqRef.current = requestSeq
-    setCurrentOffset(0)
-    setJumpStartTime(0)
-    setJumpEndTime(targetTime + 1)
-    suppressAutoLoadLaterRef.current = true
-    void loadMessagesRef.current?.(targetSessionId, 0, 0, targetTime + 1, false, {
-      forceInitialLimit: 120,
-      inSessionJumpRequestSeq: requestSeq
-    })
-  }, [])
-
   // 滚动到底部
   const scrollToBottom = useCallback(() => {
     suppressScrollToBottomButton(220)
@@ -6019,28 +5951,34 @@ function ChatPage(props: ChatPageProps) {
     }
 
     if (hasMessageAnalysisAnchor) {
-      const pendingTarget = {
+      pendingFootprintJumpRef.current = {
         sessionId: urlSessionId,
         localId: jumpLocalId,
         createTime: jumpCreateTime
       }
-      messageAnalysisJumpLoadKeyRef.current = null
-      pendingMessageAnalysisJumpRef.current = pendingTarget
       if (currentSessionId !== urlSessionId) {
         selectSessionById(urlSessionId)
-        navigate('/chat', { replace: true })
         return
       }
-      if (!jumpToMessageAnalysisTarget(pendingTarget, 'auto')) {
-        requestMessageAnalysisWindowLoad(pendingTarget)
-        navigate('/chat', { replace: true })
+      const messageStub: Message = {
+        messageKey: `footprint:${urlSessionId}:${jumpCreateTime}:${jumpLocalId}`,
+        localId: jumpLocalId,
+        serverId: 0,
+        localType: 0,
+        createTime: jumpCreateTime,
+        sortSeq: jumpCreateTime,
+        isSend: null,
+        senderUsername: null,
+        parsedContent: '',
+        rawContent: ''
       }
+      handleInSessionResultJump(messageStub)
+      pendingFootprintJumpRef.current = null
+      navigate('/chat', { replace: true })
       return
     }
 
     pendingFootprintJumpRef.current = null
-    pendingMessageAnalysisJumpRef.current = null
-    messageAnalysisJumpLoadKeyRef.current = null
     if (currentSessionId !== urlSessionId) {
       selectSessionById(urlSessionId)
     }
@@ -6054,8 +5992,6 @@ function ChatPage(props: ChatPageProps) {
     currentSessionId,
     selectSessionById,
     handleInSessionResultJump,
-    jumpToMessageAnalysisTarget,
-    requestMessageAnalysisWindowLoad,
     navigate
   ])
 
@@ -6081,30 +6017,6 @@ function ChatPage(props: ChatPageProps) {
     pendingFootprintJumpRef.current = null
     navigate('/chat', { replace: true })
   }, [isConnected, isConnecting, currentSessionId, handleInSessionResultJump, navigate])
-
-  useEffect(() => {
-    const pending = pendingMessageAnalysisJumpRef.current
-    if (!pending) return
-    if (!isConnected || isConnecting) return
-    if (currentSessionId !== pending.sessionId) return
-    if (jumpToMessageAnalysisTarget(pending, 'auto')) return
-    if (isLoadingMessages || isSessionSwitching) return
-    const loadKey = `${pending.sessionId}:${Math.floor(Number(pending.localId || 0))}:${Math.floor(Number(pending.createTime || 0))}`
-    if (messageAnalysisJumpLoadKeyRef.current === loadKey) {
-      pendingMessageAnalysisJumpRef.current = null
-      messageAnalysisJumpLoadKeyRef.current = null
-      return
-    }
-    requestMessageAnalysisWindowLoad(pending)
-  }, [
-    isConnected,
-    isConnecting,
-    currentSessionId,
-    isLoadingMessages,
-    isSessionSwitching,
-    jumpToMessageAnalysisTarget,
-    requestMessageAnalysisWindowLoad
-  ])
 
   useEffect(() => {
     if (!standaloneSessionWindow || !normalizedInitialSessionId) return
