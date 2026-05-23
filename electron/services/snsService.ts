@@ -2080,6 +2080,8 @@ window.addEventListener('scroll',function(){document.getElementById('btt').class
                 const zlib = require('zlib')
                 const urlObj = new URL(url)
 
+                console.log(`[SnsService] 开始下载图片: url=${url.substring(0, 100)}..., key=${key || 'undefined'}`)
+
                 const options = {
                     hostname: urlObj.hostname,
                     path: urlObj.pathname + urlObj.search,
@@ -2094,7 +2096,9 @@ window.addEventListener('scroll',function(){document.getElementById('btt').class
                 }
 
                 const req = https.request(options, (res: any) => {
+                    console.log(`[SnsService] CDN 响应: statusCode=${res.statusCode}, x-enc=${res.headers['x-enc']}, content-type=${res.headers['content-type']}`)
                     if (res.statusCode !== 200 && res.statusCode !== 206) {
+                        console.error(`[SnsService] CDN 请求失败: HTTP ${res.statusCode}`)
                         resolve({ success: false, error: `HTTP ${res.statusCode}` })
                         return
                     }
@@ -2114,9 +2118,11 @@ window.addEventListener('scroll',function(){document.getElementById('btt').class
 
                         let decoded = raw
                         const rawMagicMime = detectImageMime(raw, '')
+                        console.log(`[SnsService] 原始数据: size=${raw.length}, mime=${rawMagicMime}, xEnc=${xEnc}`)
 
                         // 图片逻辑
                         const shouldDecrypt = (xEnc === '1' || !!key) && key !== undefined && key !== null && String(key).trim().length > 0
+                        console.log(`[SnsService] 解密判断: shouldDecrypt=${shouldDecrypt}, key=${key || 'undefined'}`)
                         if (shouldDecrypt) {
                             try {
                                 const keyStr = String(key).trim()
@@ -2132,6 +2138,7 @@ window.addEventListener('scroll',function(){document.getElementById('btt').class
                                     }
 
                                     const decryptedMagicMime = detectImageMime(decrypted, '')
+                                    console.log(`[SnsService] 解密后: mime=${decryptedMagicMime}`)
                                     if (decryptedMagicMime.startsWith('image/')) {
                                         decoded = decrypted
                                     } else if (!rawMagicMime.startsWith('image/')) {
@@ -2144,7 +2151,9 @@ window.addEventListener('scroll',function(){document.getElementById('btt').class
                         }
 
                         const decodedMagicMime = detectImageMime(decoded, '')
+                        console.log(`[SnsService] 最终结果: mime=${decodedMagicMime}, isImage=${decodedMagicMime.startsWith('image/')}`)
                         if (!decodedMagicMime.startsWith('image/')) {
+                            console.error(`[SnsService] 图片解密失败: 原始mime=${rawMagicMime}, 解密后mime=${decodedMagicMime}, key=${key}`)
                             resolve({ success: false, error: '图片解密失败：无法识别图片格式' })
                             return
                         }
